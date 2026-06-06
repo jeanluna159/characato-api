@@ -11,6 +11,8 @@ import io
 import uuid
 
 app = FastAPI(title="Characato Store Premium Catalog API")
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 BASE_DIR = Path(__file__).parent
 ASSETS_DIR = BASE_DIR / "assets"
