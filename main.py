@@ -4,7 +4,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
-from rembg import remove
 import httpx
 import io
 import uuid
@@ -20,6 +19,18 @@ LOGO_PATH = ASSETS_DIR / "logo_circular_de_characato_arequipa.png"
 PATTERN_PATH = ASSETS_DIR / "patron_sutil_de_marca_characato_store.png"
 
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
+
+
+# --- LAZY LOADING de rembg (para que el servidor arranque rápido) ---
+_remove_fn = None
+
+def remove_background(img):
+    """Carga rembg solo la primera vez que se necesita."""
+    global _remove_fn
+    if _remove_fn is None:
+        from rembg import remove
+        _remove_fn = remove
+    return _remove_fn(img)
 
 
 class ImageURLRequest(BaseModel):
@@ -114,9 +125,9 @@ def process_image_bytes(raw: bytes, base_url: str) -> dict:
     except Exception:
         raise HTTPException(status_code=400, detail="No se pudo leer la imagen.")
 
-    # 1. Quitar fondo
+    # 1. Quitar fondo (lazy load de rembg)
     try:
-        product = remove(original)
+        product = remove_background(original)
         if isinstance(product, bytes):
             product = Image.open(io.BytesIO(product)).convert("RGBA")
         else:
