@@ -1,9 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from pathlib import Path
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 from rembg import remove
+import httpx
 import io
 import uuid
 
@@ -18,6 +20,10 @@ LOGO_PATH = ASSETS_DIR / "logo_circular_de_characato_arequipa.png"
 PATTERN_PATH = ASSETS_DIR / "patron_sutil_de_marca_characato_store.png"
 
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
+
+
+class ImageURLRequest(BaseModel):
+    image_url: str
 
 
 def set_opacity(img: Image.Image, opacity: float) -> Image.Image:
@@ -101,18 +107,8 @@ def add_logo(canvas: Image.Image) -> None:
     canvas.alpha_composite(logo, (x, y))
 
 
-@app.get("/")
-def root():
-    return {"status": "ok", "service": "Characato Store Premium Catalog API"}
-
-
-@app.post("/premium")
-async def create_premium_image(request: Request, file: UploadFile = File(...)):
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="El archivo debe ser una imagen.")
-
-    raw = await file.read()
-
+def process_image_bytes(raw: bytes, base_url: str) -> dict:
+    """Procesa la imagen y devuelve el resultado como diccionario."""
     try:
         original = Image.open(io.BytesIO(raw)).convert("RGBA")
     except Exception:
@@ -121,7 +117,10 @@ async def create_premium_image(request: Request, file: UploadFile = File(...)):
     # 1. Quitar fondo
     try:
         product = remove(original)
-        product = Image.open(io.BytesIO(product)).convert("RGBA") if isinstance(product, bytes) else product.convert("RGBA")
+        if isinstance(product, bytes):
+            product = Image.open(io.BytesIO(product)).convert("RGBA")
+        else:
+            product = product.convert("RGBA")
     except Exception:
         product = original
 
@@ -145,7 +144,7 @@ async def create_premium_image(request: Request, file: UploadFile = File(...)):
     add_shadow(canvas, product, x, y)
     canvas.alpha_composite(product, (x, y))
 
-    # 6. Logo exacto en esquina
+    # 6. Logo en esquina
     add_logo(canvas)
 
     # 7. Guardar PNG final
@@ -153,11 +152,47 @@ async def create_premium_image(request: Request, file: UploadFile = File(...)):
     output_path = OUTPUTS_DIR / filename
     canvas.save(output_path, "PNG")
 
-    base_url = str(request.base_url).rstrip("/")
     image_url = f"{base_url}/outputs/{filename}"
 
-    return JSONResponse({
+    return {
         "status": "ok",
         "format": "png",
         "image_url": image_url
-    })
+    }
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "Characato Store Premium Catalog API"}
+
+
+@app.post("/premium")
+async def create_premium_image(request: Request, file: UploadFile = File(...)):
+    """Endpoint clásico para subir imagen como archivo multipart."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser una imagen.")
+
+    raw = await file.read()
+    base_url = str(request.base_url).rstrip("/")
+    result = process_image_bytes(raw, base_url)
+    return JSONResponse(result)
+
+
+@app.post("/premium-url")
+async def create_premium_image_from_url(request: Request, body: ImageURLRequest):
+    """Endpoint para GPT Actions: recibe URL de imagen en JSON, descarga y procesa."""
+    if not body.image_url:
+        raise HTTPException(status_code=400, detail="Falta el campo image_url.")
+
+    # Descargar la imagen desde la URL
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(body.image_url)
+            response.raise_for_status()
+            raw = response.content
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo descargar la imagen: {str(e)}")
+
+    base_url = str(request.base_url).rstrip("/")
+    result = process_image_bytes(raw, base_url)
+    return JSONResponse(result)
